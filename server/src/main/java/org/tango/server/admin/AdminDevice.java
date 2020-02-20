@@ -60,6 +60,7 @@ import org.tango.server.transport.TransportManager;
 import org.tango.server.transport.ZmqTransportListener;
 import org.tango.utils.DevFailedUtils;
 import org.tango.utils.TangoUtil;
+import org.zeromq.ZContext;
 import org.zeromq.ZMQ;
 
 import java.util.*;
@@ -67,6 +68,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.IntStream;
 
 /**
  * The administration device. Will be started automatically for each device
@@ -81,6 +83,7 @@ public final class AdminDevice implements TangoMXBean {
     private static final String DOES_NOT_EXISTS = " does not exists";
     private static final String DEVICE_NAME = "Device name";
     private static final String INPUT_ERROR = "INPUT_ERROR";
+    public static final int ZMQ_LISTENERS = 200;
     private final Logger logger = LoggerFactory.getLogger(AdminDevice.class);
     private final XLogger xlogger = XLoggerFactory.getXLogger(AdminDevice.class);
 
@@ -435,7 +438,7 @@ public final class AdminDevice implements TangoMXBean {
         return pollDevices.toArray(new String[pollDevices.size()]);
     }
 
-    private final ExecutorService executorService = Executors.newSingleThreadExecutor(
+    private final ExecutorService executorService = Executors.newFixedThreadPool(ZMQ_LISTENERS + 1,
             new ThreadFactoryBuilder()
                     .setDaemon(true)
                     .setNameFormat("ZmqTransportListener-%d")
@@ -821,10 +824,23 @@ public final class AdminDevice implements TangoMXBean {
     private final TransportManager transportManager = new TransportManager();
 
     {
-        ZMQ.Socket socket = transportManager
+        ZContext ctx = transportManager
                 .bindZmqTransport();
+        Runnable runnable = new Runnable() {
+            public void run() {
+                ZMQ.proxy(transportManager.clientSocket, transportManager.workerSocket, null);
+            }
+        };
+        executorService.submit(runnable);
 
-        executorService.execute(new ZmqTransportListener(socket, this));
+
+        IntStream.range(0, ZMQ_LISTENERS).forEach(i -> {
+            executorService.submit(new ZmqTransportListener(ctx, this));
+        });
+    }
+
+    public TransportManager getTransportManager() {
+        return transportManager;
     }
 
     public DeviceImpl getDeviceImpl(String device) {
